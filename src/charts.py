@@ -70,6 +70,7 @@ def performance_bar_chart(df: pd.DataFrame) -> go.Figure:
         marker_color=colors,
         text=[f"{v:+.1f}%" for v in df["total_return_pct"]],
         textposition="outside",
+        cliponaxis=False,
         hovertemplate="<b>%{y}</b><br>Return: %{x:+.2f}%<extra></extra>",
     ))
     fig.update_layout(
@@ -78,7 +79,7 @@ def performance_bar_chart(df: pd.DataFrame) -> go.Figure:
         xaxis_title="Total Return %",
         yaxis_title="",
         height=max(400, len(df) * 35),
-        margin=dict(t=60, b=40, l=80, r=60),
+        margin=dict(t=60, b=40, l=80, r=100),
     )
     return fig
 
@@ -110,6 +111,246 @@ def waterfall_chart(df: pd.DataFrame) -> go.Figure:
         height=450,
         margin=dict(t=60, b=40, l=80, r=40),
         showlegend=False,
+    )
+    return fig
+
+
+def concentration_chart(df: pd.DataFrame) -> go.Figure:
+    """
+    Horizontal bar chart of top 10 holdings by portfolio weight.
+    Expects DataFrame with columns: symbol, weight
+    """
+    df = df.nlargest(10, "weight").sort_values("weight", ascending=True)
+
+    # Gradient from muted to bright based on weight
+    max_w = df["weight"].max()
+    colors = [
+        f"rgba(76, 175, 80, {0.4 + 0.6 * (w / max_w)})" for w in df["weight"]
+    ]
+
+    fig = go.Figure(go.Bar(
+        x=df["weight"],
+        y=df["symbol"],
+        orientation="h",
+        marker_color=colors,
+        text=[f"{v:.1f}%" for v in df["weight"]],
+        textposition="outside",
+        cliponaxis=False,
+        textfont=dict(color="#FAFAFA"),
+        hovertemplate="<b>%{y}</b><br>Weight: %{x:.2f}%<extra></extra>",
+    ))
+    fig.update_layout(
+        title="Top 10 Holdings by Weight",
+        template=TEMPLATE,
+        xaxis_title="Portfolio Weight %",
+        xaxis_ticksuffix="%",
+        yaxis_title="",
+        height=420,
+        margin=dict(t=60, b=40, l=80, r=100),
+    )
+    return fig
+
+
+def correlation_heatmap(corr: pd.DataFrame) -> go.Figure:
+    """
+    Heatmap of pairwise return correlations.
+    Red (negative) → dark bg (zero) → green (positive).
+    """
+    tickers = corr.columns.tolist()
+    z = corr.values
+
+    # Custom colorscale: red → orange → yellow → light green → green
+    colorscale = [
+        [0.0, "#EF5350"],
+        [0.25, "#FF7043"],
+        [0.4, "#FFA726"],
+        [0.5, "#FFCA28"],
+        [0.65, "#C6D94E"],
+        [0.8, "#66BB6A"],
+        [1.0, "#2E7D32"],
+    ]
+
+    # Build annotation text — show values, but blank the diagonal
+    annotations = []
+    for i, row_ticker in enumerate(tickers):
+        for j, col_ticker in enumerate(tickers):
+            val = z[i][j]
+            if i == j:
+                text = ""
+                font_color = "rgba(0,0,0,0)"
+            else:
+                text = f"{val:.2f}"
+                # Dark text on bright mid-range cells, light text on dark extremes
+                norm = (val + 1) / 2  # 0 to 1
+                if 0.35 < norm < 0.65:
+                    font_color = "rgba(30, 30, 30, 0.9)"
+                else:
+                    font_color = "rgba(250, 250, 250, 0.9)"
+
+            annotations.append(dict(
+                x=col_ticker, y=row_ticker,
+                text=text,
+                font=dict(size=11, color=font_color),
+                showarrow=False,
+            ))
+
+    fig = go.Figure(data=go.Heatmap(
+        z=z,
+        x=tickers,
+        y=tickers,
+        colorscale=colorscale,
+        zmin=-1, zmax=1,
+        hovertemplate="<b>%{x} × %{y}</b><br>Correlation: %{z:.2f}<extra></extra>",
+        colorbar=dict(
+            title=dict(text="Corr", side="right"),
+            tickvals=[-1, -0.5, 0, 0.5, 1],
+            ticktext=["-1.0", "-0.5", "0.0", "0.5", "1.0"],
+        ),
+    ))
+
+    n = len(tickers)
+    fig.update_layout(
+        title="Return Correlations (1Y Daily)",
+        template=TEMPLATE,
+        annotations=annotations,
+        xaxis=dict(side="bottom", tickangle=-45),
+        yaxis=dict(autorange="reversed"),
+        height=max(500, n * 45 + 120),
+        width=max(500, n * 45 + 120),
+        margin=dict(t=60, b=80, l=80, r=40),
+    )
+
+    return fig
+
+
+def dividend_bar_chart(df: pd.DataFrame) -> go.Figure:
+    """
+    Bar chart of projected annual dividend income by position.
+    Expects DataFrame with columns: symbol, annual_income, yield_pct
+    """
+    df = df.sort_values("annual_income", ascending=True)
+
+    # Gradient: dimmer for small, brighter for large
+    max_inc = df["annual_income"].max() if df["annual_income"].max() > 0 else 1
+    colors = [
+        f"rgba(76, 175, 80, {0.3 + 0.7 * (v / max_inc)})" for v in df["annual_income"]
+    ]
+
+    fig = go.Figure(go.Bar(
+        x=df["annual_income"],
+        y=df["symbol"],
+        orientation="h",
+        marker_color=colors,
+        text=[f"${v:,.2f}" for v in df["annual_income"]],
+        textposition="outside",
+        cliponaxis=False,
+        textfont=dict(color="#FAFAFA"),
+        customdata=df["yield_pct"].values,
+        hovertemplate="<b>%{y}</b><br>Annual Income: $%{x:,.2f}<br>Yield: %{customdata:.2f}%<extra></extra>",
+    ))
+    fig.update_layout(
+        title="Projected Annual Dividend Income",
+        template=TEMPLATE,
+        xaxis_title="Annual Income ($)",
+        yaxis_title="",
+        height=max(400, len(df) * 35),
+        margin=dict(t=60, b=40, l=80, r=100),
+    )
+    return fig
+
+
+def dividend_timeline_chart(df: pd.DataFrame) -> go.Figure:
+    """
+    Monthly bar chart of estimated historical dividend income over the past year.
+    Expects DataFrame with columns: month (datetime), income
+    """
+    fig = go.Figure(go.Bar(
+        x=df["month"],
+        y=df["income"],
+        marker=dict(
+            color=df["income"],
+            colorscale=[[0, "rgba(76,175,80,0.3)"], [1, "#4CAF50"]],
+        ),
+        text=[f"${v:,.2f}" for v in df["income"]],
+        textposition="outside",
+        cliponaxis=False,
+        textfont=dict(color="#FAFAFA", size=10),
+        hovertemplate="%{x|%b %Y}<br>Est. Income: $%{y:,.2f}<extra></extra>",
+    ))
+    fig.update_layout(
+        title="Estimated Monthly Dividend Income (Past Year)",
+        template=TEMPLATE,
+        xaxis_title="",
+        yaxis_title="Income ($)",
+        height=400,
+        margin=dict(t=80, b=40, l=60, r=20),
+        xaxis=dict(dtick="M1", tickformat="%b\n%Y"),
+    )
+    return fig
+
+
+CAP_COLORS = {
+    "Large Cap": "#42A5F5",
+    "Mid Cap": "#FFA726",
+    "Small Cap": "#EF5350",
+    "Unknown": "#78909C",
+}
+
+
+def market_cap_donut(df: pd.DataFrame) -> go.Figure:
+    """
+    Donut chart of portfolio weight by market cap bucket.
+    Expects DataFrame with columns: cap_bucket, value
+    """
+    grouped = df.groupby("cap_bucket")["value"].sum()
+    # Order: Large, Mid, Small, Unknown
+    order = ["Large Cap", "Mid Cap", "Small Cap", "Unknown"]
+    grouped = grouped.reindex([b for b in order if b in grouped.index])
+    colors = [CAP_COLORS.get(b, "#78909C") for b in grouped.index]
+
+    fig = go.Figure(data=[go.Pie(
+        labels=grouped.index.tolist(),
+        values=grouped.values.tolist(),
+        hole=0.45,
+        textinfo="label+percent",
+        textposition="inside",
+        insidetextorientation="horizontal",
+        marker=dict(colors=colors),
+        hovertemplate="<b>%{label}</b><br>%{value:$,.0f}<br>%{percent}<extra></extra>",
+    )])
+    fig.update_layout(
+        title="Market Cap Allocation",
+        template=TEMPLATE,
+        showlegend=True,
+        legend=dict(orientation="h", yanchor="top", y=-0.05, xanchor="center", x=0.5),
+        margin=dict(t=60, b=80, l=20, r=20),
+        height=450,
+    )
+    return fig
+
+
+def market_cap_treemap(df: pd.DataFrame) -> go.Figure:
+    """
+    Treemap of holdings grouped by market cap bucket.
+    Expects DataFrame with columns: symbol, cap_bucket, value
+    """
+    fig = px.treemap(
+        df,
+        path=["cap_bucket", "symbol"],
+        values="value",
+        color="cap_bucket",
+        color_discrete_map=CAP_COLORS,
+        template=TEMPLATE,
+    )
+    fig.update_traces(
+        textinfo="label+percent root",
+        texttemplate="<b>%{label}</b><br>%{percentRoot:.1%}",
+        hovertemplate="<b>%{label}</b><br>Value: $%{value:,.0f}<br>%{percentRoot:.1%} of portfolio<extra></extra>",
+    )
+    fig.update_layout(
+        title="Holdings by Market Cap",
+        height=500,
+        margin=dict(t=60, b=20, l=20, r=20),
     )
     return fig
 

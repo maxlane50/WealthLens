@@ -37,6 +37,7 @@ def get_info(ticker: str) -> Dict:
             "dividend_yield": info.get("dividendYield"),
             "quote_type": info.get("quoteType"),
             "short_name": info.get("shortName"),
+            "category": info.get("category"),
         }
     except Exception:
         return {}

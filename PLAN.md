@@ -213,6 +213,14 @@ numpy>=1.24.0
 - This would make the Portfolio vs. Benchmark chart reflect real returns, not just a hypothetical backtest
 - Current workaround: benchmark tab capped at 1Y with a disclaimer that it uses current weights
 
+### Accurate Dividend History via Activity CSVs
+- Fidelity's Activity & Orders page allows exporting transaction history as CSV (365 days at a time)
+- These CSVs include actual dividend payment records: date, ticker, amount received
+- Investigate: parse activity CSVs to build a real dividend income history (instead of estimating from current shares x historical div payments)
+- Could also cross-reference with trade history to know exact shares held at each ex-date
+- Would replace the "estimated" monthly timeline with actual received income
+- Multiple activity CSVs (one per year) could provide 3-4 years of real dividend history
+
 ### UI/UX & Visual Polish
 - Explore advanced color schemes and gradients for charts (beyond default Plotly palettes)
 - Investigate custom CSS styling for KPI cards, tables, and layout
