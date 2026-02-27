@@ -202,3 +202,20 @@ plotly>=5.18.0
 pandas>=2.0.0
 numpy>=1.24.0
 ```
+
+## Follow-Up Items
+
+### Trade History Import for Accurate Benchmark
+- Fidelity only allows exporting 365 days of trade history at a time
+- Investigate: allow uploading multiple trade history CSVs (one per year) to get 3-4 years of coverage
+- Parse buy/sell dates, quantities, and tickers from trade history exports
+- Use actual purchase dates to build a time-accurate portfolio weight history (instead of assuming current weights held forever)
+- This would make the Portfolio vs. Benchmark chart reflect real returns, not just a hypothetical backtest
+- Current workaround: benchmark tab capped at 1Y with a disclaimer that it uses current weights
+
+### UI/UX & Visual Polish
+- Explore advanced color schemes and gradients for charts (beyond default Plotly palettes)
+- Investigate custom CSS styling for KPI cards, tables, and layout
+- Look into animated transitions, sparklines, or mini-charts in the overview table
+- Consider a more polished color system — e.g. consistent green/red tones across all tabs, subtle accent colors
+- Explore Streamlit theming options and custom components for a more "app-like" feel

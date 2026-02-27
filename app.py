@@ -6,7 +6,12 @@ from datetime import datetime
 from pathlib import Path
 from src.parser import parse_fidelity_csv, find_csv_in_directory
 from src.market_data import get_info_for_tickers
-from src.charts import sector_allocation_chart, asset_class_chart
+from src.portfolio import portfolio_cumulative_returns
+from src.charts import (
+    sector_allocation_chart, asset_class_chart,
+    performance_bar_chart, waterfall_chart,
+    benchmark_chart,
+)
 
 st.set_page_config(
     page_title="WealthLens",
@@ -67,7 +72,9 @@ df_filtered = df[df["account_name"].isin(selected_accounts)]
 total_value = df_filtered["current_value"].sum()
 
 # --- Tabs ---
-tab_overview, tab_allocation = st.tabs(["Overview", "Allocation"])
+tab_overview, tab_benchmark, tab_allocation, tab_performance = st.tabs([
+    "Overview", "Portfolio vs. Benchmark", "Allocation", "Performance",
+])
 
 # ==================== TAB 1: OVERVIEW ====================
 with tab_overview:
@@ -124,7 +131,46 @@ with tab_overview:
         cash_total = cash_positions["current_value"].sum()
         st.caption(f"Cash (money market): ${cash_total:,.2f}")
 
-# ==================== TAB 2: ALLOCATION ====================
+# ==================== TAB 2: PORTFOLIO VS. BENCHMARK ====================
+with tab_benchmark:
+    PERIODS = {"1M": "1mo", "3M": "3mo", "6M": "6mo", "YTD": "ytd", "1Y": "1y"}
+    st.caption("Uses current portfolio weights — not actual trade history. Best viewed at shorter time ranges.")
+    cols = st.columns(len(PERIODS))
+    selected_period = "1Y"
+    for i, (label, _) in enumerate(PERIODS.items()):
+        if cols[i].button(label, use_container_width=True, key=f"period_{label}"):
+            selected_period = label
+
+    period_code = PERIODS[selected_period]
+
+    # Build ticker/weight lists from current portfolio
+    non_cash_df = df_filtered[~df_filtered["is_cash"]].copy()
+    ticker_weights = non_cash_df.groupby("symbol")["current_value"].sum()
+    tickers = ticker_weights.index.tolist()
+    weights = ticker_weights.values.tolist()
+
+    with st.spinner("Fetching historical prices..."):
+        cumulative = portfolio_cumulative_returns(tickers, weights, period=period_code)
+
+    if not cumulative.empty:
+        st.plotly_chart(benchmark_chart(cumulative), use_container_width=True)
+
+        # Summary metrics
+        col1, col2, col3 = st.columns(3)
+        port_return = cumulative["Portfolio"].iloc[-1] - 100
+        with col1:
+            st.metric("Portfolio Return", f"{port_return:+.2f}%")
+        if "SPY" in cumulative.columns:
+            spy_return = cumulative["SPY"].iloc[-1] - 100
+            with col2:
+                st.metric("SPY Return", f"{spy_return:+.2f}%")
+            with col3:
+                diff = port_return - spy_return
+                st.metric("vs. Benchmark", f"{diff:+.2f}%")
+    else:
+        st.warning("Not enough price data for the selected period.")
+
+# ==================== TAB 3: ALLOCATION ====================
 with tab_allocation:
     # Get unique non-cash tickers and fetch yfinance info
     non_cash_df = df_filtered[~df_filtered["is_cash"]].copy()
@@ -183,3 +229,21 @@ with tab_allocation:
         class_df = pd.DataFrame(class_rows)
         if not class_df.empty:
             st.plotly_chart(asset_class_chart(class_df), use_container_width=True)
+
+# ==================== TAB 4: PERFORMANCE ====================
+with tab_performance:
+    non_cash_df = df_filtered[~df_filtered["is_cash"]].copy()
+
+    # Aggregate by ticker across accounts
+    perf = non_cash_df.groupby("symbol").agg(
+        current_value=("current_value", "sum"),
+        cost_basis=("cost_basis", "sum"),
+        gain_loss_dollar=("total_gain_loss_dollar", "sum"),
+    ).reset_index()
+    perf["total_return_pct"] = (perf["gain_loss_dollar"] / perf["cost_basis"] * 100).fillna(0)
+
+    col_left, col_right = st.columns(2)
+    with col_left:
+        st.plotly_chart(performance_bar_chart(perf[["symbol", "total_return_pct"]]), use_container_width=True)
+    with col_right:
+        st.plotly_chart(waterfall_chart(perf[["symbol", "gain_loss_dollar"]]), use_container_width=True)
