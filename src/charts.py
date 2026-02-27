@@ -388,3 +388,136 @@ def benchmark_chart(cumulative: pd.DataFrame) -> go.Figure:
         legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
     )
     return fig
+
+
+def risk_return_scatter(df: pd.DataFrame) -> go.Figure:
+    """
+    Risk vs Return bubble chart for individual holdings.
+    Expects DataFrame with columns: symbol, volatility_pct, total_return_pct, current_value
+    """
+    colors = ["#4CAF50" if r >= 0 else "#EF5350" for r in df["total_return_pct"]]
+
+    # Bubble size: scale to 10–50px range
+    max_val = df["current_value"].max() if df["current_value"].max() > 0 else 1
+    sizes = [max(10, 10 + 40 * (v / max_val)) for v in df["current_value"]]
+
+    med_vol = df["volatility_pct"].median()
+
+    fig = go.Figure()
+
+    # Subtle quadrant shading
+    vol_max = df["volatility_pct"].max() * 1.15
+    fig.add_vrect(x0=0, x1=med_vol,
+                  fillcolor="rgba(76,175,80,0.04)", line_width=0)
+    fig.add_vrect(x0=med_vol, x1=vol_max,
+                  fillcolor="rgba(239,83,80,0.04)", line_width=0)
+
+    fig.add_vline(x=med_vol, line_dash="dot",
+                  line_color="rgba(255,255,255,0.2)",
+                  annotation_text="Median Vol",
+                  annotation_position="top right",
+                  annotation_font_color="rgba(255,255,255,0.35)")
+    fig.add_hline(y=0, line_dash="dot",
+                  line_color="rgba(255,255,255,0.2)")
+
+    fig.add_trace(go.Scatter(
+        x=df["volatility_pct"],
+        y=df["total_return_pct"],
+        mode="markers+text",
+        marker=dict(
+            size=sizes,
+            color=colors,
+            opacity=0.85,
+            line=dict(color="rgba(255,255,255,0.2)", width=1),
+        ),
+        text=df["symbol"],
+        textposition="top center",
+        textfont=dict(size=10, color="#FAFAFA"),
+        customdata=df["current_value"],
+        hovertemplate=(
+            "<b>%{text}</b><br>"
+            "Volatility: %{x:.1f}%<br>"
+            "Return: %{y:+.1f}%<br>"
+            "Value: $%{customdata:,.0f}<extra></extra>"
+        ),
+    ))
+
+    fig.update_layout(
+        title="Risk vs. Return by Position",
+        template=TEMPLATE,
+        xaxis_title="Annualized Volatility (%)",
+        yaxis_title="Total Return (%)",
+        xaxis_ticksuffix="%",
+        yaxis_ticksuffix="%",
+        height=520,
+        margin=dict(t=60, b=60, l=60, r=40),
+        showlegend=False,
+    )
+    return fig
+
+
+def sector_comparison_chart(user_pcts: dict, sp500_pcts: dict) -> go.Figure:
+    """Grouped bar chart comparing user sector weights vs S&P 500."""
+    all_sectors = sorted(set(list(user_pcts.keys()) + list(sp500_pcts.keys())))
+    user_vals = [user_pcts.get(s, 0.0) for s in all_sectors]
+    sp500_vals = [sp500_pcts.get(s, 0.0) for s in all_sectors]
+
+    fig = go.Figure()
+    fig.add_trace(go.Bar(
+        name="Your Portfolio", x=all_sectors, y=user_vals,
+        marker_color="#4CAF50", opacity=0.85,
+        hovertemplate="<b>%{x}</b><br>Your Portfolio: %{y:.1f}%<extra></extra>",
+    ))
+    fig.add_trace(go.Bar(
+        name="S&P 500", x=all_sectors, y=sp500_vals,
+        marker_color="#42A5F5", opacity=0.65,
+        hovertemplate="<b>%{x}</b><br>S&P 500: %{y:.1f}%<extra></extra>",
+    ))
+    fig.update_layout(
+        title="Sector Allocation vs. S&P 500",
+        template=TEMPLATE,
+        barmode="group",
+        yaxis_title="Weight %",
+        yaxis_ticksuffix="%",
+        height=420,
+        margin=dict(t=60, b=120, l=60, r=20),
+        xaxis_tickangle=-30,
+        legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1),
+    )
+    return fig
+
+
+def diversification_gauge(score: int) -> go.Figure:
+    """Gauge chart showing portfolio diversification score 0-100."""
+    if score >= 60:
+        bar_color = "#4CAF50"
+    elif score >= 35:
+        bar_color = "#FFA726"
+    else:
+        bar_color = "#EF5350"
+
+    fig = go.Figure(go.Indicator(
+        mode="gauge+number",
+        value=score,
+        domain={"x": [0, 1], "y": [0, 1]},
+        title={"text": "Diversification Score", "font": {"size": 18, "color": "#FAFAFA"}},
+        number={"font": {"size": 52, "color": "#FAFAFA"}, "suffix": " / 100"},
+        gauge={
+            "axis": {"range": [0, 100], "tickwidth": 1, "tickcolor": "#555",
+                     "tickfont": {"color": "#888"}},
+            "bar": {"color": bar_color, "thickness": 0.3},
+            "bgcolor": "rgba(0,0,0,0)",
+            "borderwidth": 0,
+            "steps": [
+                {"range": [0, 35], "color": "rgba(239,83,80,0.12)"},
+                {"range": [35, 60], "color": "rgba(255,167,38,0.12)"},
+                {"range": [60, 100], "color": "rgba(76,175,80,0.12)"},
+            ],
+        },
+    ))
+    fig.update_layout(
+        template=TEMPLATE,
+        height=280,
+        margin=dict(t=40, b=20, l=40, r=40),
+    )
+    return fig

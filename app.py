@@ -5,7 +5,7 @@ import pandas as pd
 from datetime import datetime
 from pathlib import Path
 from src.parser import parse_fidelity_csv, find_csv_in_directory
-from src.market_data import get_info_for_tickers, get_info, get_dividends
+from src.market_data import get_info_for_tickers, get_info, get_dividends, get_history, get_bulk_history
 from src.portfolio import portfolio_cumulative_returns, portfolio_risk_metrics, correlation_matrix
 from src.charts import (
     sector_allocation_chart, asset_class_chart,
@@ -13,7 +13,8 @@ from src.charts import (
     benchmark_chart, concentration_chart,
     correlation_heatmap, dividend_bar_chart,
     dividend_timeline_chart, market_cap_donut,
-    market_cap_treemap,
+    market_cap_treemap, risk_return_scatter,
+    sector_comparison_chart, diversification_gauge,
 )
 
 st.set_page_config(
@@ -22,9 +23,92 @@ st.set_page_config(
     layout="wide",
 )
 
+# --- Splash Screen (shows once per session) ---
+if "splash_shown" not in st.session_state:
+    st.session_state["splash_shown"] = True
+    splash = st.empty()
+    splash.markdown(
+        """
+        <style>
+        @keyframes wl-glow {
+            0%, 100% { text-shadow: 0 0 20px rgba(76,175,80,0.4), 0 0 60px rgba(76,175,80,0.1); }
+            50% { text-shadow: 0 0 40px rgba(76,175,80,0.8), 0 0 80px rgba(76,175,80,0.3); }
+        }
+        @keyframes wl-fade-in {
+            from { opacity: 0; transform: translateY(20px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+        @keyframes wl-line {
+            from { width: 0; }
+            to { width: 120px; }
+        }
+        @keyframes wl-fade-out {
+            0%, 70% { opacity: 1; }
+            100% { opacity: 0; }
+        }
+        .wl-splash {
+            position: fixed; inset: 0; z-index: 9999;
+            background: #0E1117;
+            display: flex; flex-direction: column;
+            align-items: center; justify-content: center;
+            animation: wl-fade-out 2.8s ease-in-out forwards;
+            pointer-events: none;
+        }
+        .wl-title {
+            font-family: 'Inter', 'SF Pro Display', -apple-system, sans-serif;
+            font-size: 4rem; font-weight: 700; letter-spacing: -2px;
+            color: #FAFAFA;
+            animation: wl-fade-in 0.8s ease-out, wl-glow 2s ease-in-out infinite;
+        }
+        .wl-title span { color: #4CAF50; }
+        .wl-line {
+            height: 2px; margin-top: 16px; border-radius: 1px;
+            background: linear-gradient(90deg, transparent, #4CAF50, transparent);
+            animation: wl-line 1.2s ease-out 0.4s both;
+        }
+        .wl-sub {
+            margin-top: 14px; color: #666; font-size: 0.95rem;
+            letter-spacing: 3px; text-transform: uppercase;
+            animation: wl-fade-in 0.8s ease-out 0.6s both;
+        }
+        </style>
+        <div class="wl-splash">
+            <div class="wl-title">Wealth<span>Lens</span></div>
+            <div class="wl-line"></div>
+            <div class="wl-sub">Portfolio Analytics</div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+
+# --- Global Styles ---
+st.markdown(
+    """
+    <style>
+    /* Subtle separator between tabs content */
+    .stTabs [data-baseweb="tab-panel"] { padding-top: 1.2rem; }
+    /* Make tab labels slightly larger */
+    .stTabs [data-baseweb="tab"] { font-size: 0.95rem; }
+    /* KPI card hover effect */
+    .wl-card {
+        transition: transform 0.2s ease, box-shadow 0.2s ease;
+        cursor: default;
+    }
+    .wl-card:hover {
+        transform: translateY(-2px);
+        box-shadow: 0 4px 20px rgba(76,175,80,0.15);
+    }
+    </style>
+    """,
+    unsafe_allow_html=True,
+)
+
 # --- Sidebar ---
 with st.sidebar:
-    st.title("WealthLens")
+    st.markdown(
+        "<h1 style='margin-bottom:4px;'>Wealth<span style=\"color:#4CAF50;\">Lens</span></h1>",
+        unsafe_allow_html=True,
+    )
 
     uploaded_file = st.file_uploader("Upload Fidelity CSV", type=["csv"])
 
@@ -74,10 +158,65 @@ with st.sidebar:
 df_filtered = df[df["account_name"].isin(selected_accounts)]
 total_value = df_filtered["current_value"].sum()
 
+# --- Ticker Tape ---
+tape_df = (
+    df_filtered[~df_filtered["is_cash"]]
+    .groupby("symbol")
+    .agg(last_price=("last_price", "first"),
+         todays_gain_loss_pct=("todays_gain_loss_pct", "first"))
+    .reset_index()
+    .sort_values("last_price", ascending=False)
+)
+tape_items = []
+for _, row in tape_df.iterrows():
+    sym = row["symbol"]
+    price = row["last_price"] or 0.0
+    pct = row["todays_gain_loss_pct"] or 0.0
+    color = "#4CAF50" if pct >= 0 else "#EF5350"
+    sign = "+" if pct >= 0 else ""
+    tape_items.append(
+        f"<span style='color:{color}; margin:0 24px;'>"
+        f"<b>{sym}</b> ${price:,.2f} "
+        f"<span style='font-size:0.85em;'>({sign}{pct:.2f}%)</span>"
+        f"</span>"
+    )
+tape_content = "".join(tape_items * 3)
+tape_duration = max(20, len(tape_items) * 2)
+st.markdown(f"""
+<style>
+@keyframes wl-tape-scroll {{
+    0%   {{ transform: translateX(0); }}
+    100% {{ transform: translateX(-33.333%); }}
+}}
+.wl-tape-wrap {{
+    overflow: hidden;
+    white-space: nowrap;
+    background: rgba(255,255,255,0.03);
+    border-top: 1px solid rgba(255,255,255,0.06);
+    border-bottom: 1px solid rgba(255,255,255,0.06);
+    padding: 8px 0;
+    margin-bottom: 8px;
+    font-family: 'SF Mono', 'Fira Code', 'Consolas', monospace;
+    font-size: 0.85rem;
+    letter-spacing: 0.02em;
+}}
+.wl-tape-inner {{
+    display: inline-block;
+    animation: wl-tape-scroll {tape_duration}s linear infinite;
+}}
+.wl-tape-wrap:hover .wl-tape-inner {{
+    animation-play-state: paused;
+}}
+</style>
+<div class="wl-tape-wrap">
+  <div class="wl-tape-inner">{tape_content}</div>
+</div>
+""", unsafe_allow_html=True)
+
 # --- Tabs ---
-tab_overview, tab_benchmark, tab_allocation, tab_performance, tab_risk, tab_corr, tab_divs, tab_cap = st.tabs([
+tab_overview, tab_benchmark, tab_allocation, tab_performance, tab_risk, tab_corr, tab_divs, tab_cap, tab_insights = st.tabs([
     "Overview", "Portfolio vs. Benchmark", "Allocation", "Performance",
-    "Concentration & Risk", "Correlation", "Dividends", "Market Cap",
+    "Concentration & Risk", "Correlation", "Dividends", "Market Cap", "Insights",
 ])
 
 # ==================== TAB 1: OVERVIEW ====================
@@ -112,6 +251,21 @@ with tab_overview:
         "total_gain_loss_dollar", "total_gain_loss_pct", "weight",
     ]].sort_values("current_value", ascending=False)
 
+    # Fetch 30-day sparkline data for each ticker
+    with st.spinner("Loading 30-day trends..."):
+        trend_map = {}
+        for ticker in non_cash["symbol"].unique():
+            hist = get_history(ticker, period="1mo")
+            if not hist.empty and "Close" in hist.columns:
+                trend_map[ticker] = hist["Close"].dropna().tolist()
+            else:
+                trend_map[ticker] = []
+
+    display = display.copy()
+    display["trend"] = display["symbol"].map(trend_map).apply(
+        lambda v: v if isinstance(v, list) and len(v) > 0 else []
+    )
+
     st.dataframe(
         display,
         use_container_width=True,
@@ -127,6 +281,7 @@ with tab_overview:
             "total_gain_loss_dollar": st.column_config.NumberColumn("Gain/Loss $", format="$%.2f"),
             "total_gain_loss_pct": st.column_config.NumberColumn("Gain/Loss %", format="%.2f%%"),
             "weight": st.column_config.NumberColumn("Weight %", format="%.2f%%"),
+            "trend": st.column_config.LineChartColumn("30D Trend", width="medium"),
         },
     )
 
@@ -252,6 +407,34 @@ with tab_performance:
     with col_right:
         st.plotly_chart(waterfall_chart(perf[["symbol", "gain_loss_dollar"]]), use_container_width=True)
 
+    # Risk vs Return scatter
+    import numpy as np
+    perf_tickers = perf["symbol"].tolist()
+    with st.spinner("Computing per-ticker volatility..."):
+        closes_perf = get_bulk_history(tuple(sorted(perf_tickers)), period="1y")
+
+    scatter_rows = []
+    if not closes_perf.empty:
+        daily_rets = closes_perf.pct_change().iloc[1:]
+        for _, row in perf.iterrows():
+            sym = row["symbol"]
+            if sym in daily_rets.columns:
+                rets = daily_rets[sym].dropna()
+                if len(rets) >= 30:
+                    vol = float(rets.std() * np.sqrt(252) * 100)
+                    scatter_rows.append({
+                        "symbol": sym,
+                        "volatility_pct": round(vol, 2),
+                        "total_return_pct": row["total_return_pct"],
+                        "current_value": row["current_value"],
+                    })
+
+    if len(scatter_rows) >= 2:
+        st.plotly_chart(
+            risk_return_scatter(pd.DataFrame(scatter_rows)),
+            use_container_width=True,
+        )
+
 # ==================== TAB 5: CONCENTRATION & RISK ====================
 with tab_risk:
     non_cash_df = df_filtered[~df_filtered["is_cash"]].copy()
@@ -285,7 +468,7 @@ with tab_risk:
             if beta is not None:
                 beta_color = "#4CAF50" if 0.8 <= beta <= 1.2 else "#FFA726" if beta < 1.5 else "#EF5350"
                 st.markdown(
-                    f"<div style='padding:12px; border-radius:8px; border-left:4px solid {beta_color}; "
+                    f"<div class='wl-card' style='padding:12px; border-radius:8px; border-left:4px solid {beta_color}; "
                     f"background:rgba(255,255,255,0.03); margin-bottom:12px;'>"
                     f"<span style='color:#999; font-size:0.85em;'>Portfolio Beta</span><br>"
                     f"<span style='font-size:1.8em; font-weight:600; color:{beta_color};'>{beta}</span>"
@@ -298,7 +481,7 @@ with tab_risk:
             if vol is not None:
                 vol_color = "#4CAF50" if vol < 15 else "#FFA726" if vol < 25 else "#EF5350"
                 st.markdown(
-                    f"<div style='padding:12px; border-radius:8px; border-left:4px solid {vol_color}; "
+                    f"<div class='wl-card' style='padding:12px; border-radius:8px; border-left:4px solid {vol_color}; "
                     f"background:rgba(255,255,255,0.03); margin-bottom:12px;'>"
                     f"<span style='color:#999; font-size:0.85em;'>Annualized Volatility</span><br>"
                     f"<span style='font-size:1.8em; font-weight:600; color:{vol_color};'>{vol}%</span>"
@@ -312,7 +495,7 @@ with tab_risk:
                 sharpe_color = "#4CAF50" if sharpe > 1 else "#FFA726" if sharpe > 0.5 else "#EF5350"
                 rfr = risk.get("risk_free_rate", 4.0)
                 st.markdown(
-                    f"<div style='padding:12px; border-radius:8px; border-left:4px solid {sharpe_color}; "
+                    f"<div class='wl-card' style='padding:12px; border-radius:8px; border-left:4px solid {sharpe_color}; "
                     f"background:rgba(255,255,255,0.03); margin-bottom:12px;'>"
                     f"<span style='color:#999; font-size:0.85em;'>Sharpe Ratio</span><br>"
                     f"<span style='font-size:1.8em; font-weight:600; color:{sharpe_color};'>{sharpe}</span>"
@@ -364,7 +547,7 @@ with tab_corr:
                 val = lowest["correlation"]
                 color = "#EF5350" if val < 0 else "#FFA726"
                 st.markdown(
-                    f"<div style='padding:14px; border-radius:8px; border-left:4px solid {color}; "
+                    f"<div class='wl-card' style='padding:14px; border-radius:8px; border-left:4px solid {color}; "
                     f"background:rgba(255,255,255,0.03);'>"
                     f"<span style='color:#999; font-size:0.85em;'>Least Correlated Pair</span><br>"
                     f"<span style='font-size:1.4em; font-weight:600; color:#FAFAFA;'>{lowest['pair']}</span>"
@@ -376,7 +559,7 @@ with tab_corr:
                 val = highest["correlation"]
                 color = "#4CAF50"
                 st.markdown(
-                    f"<div style='padding:14px; border-radius:8px; border-left:4px solid {color}; "
+                    f"<div class='wl-card' style='padding:14px; border-radius:8px; border-left:4px solid {color}; "
                     f"background:rgba(255,255,255,0.03);'>"
                     f"<span style='color:#999; font-size:0.85em;'>Most Correlated Pair</span><br>"
                     f"<span style='font-size:1.4em; font-weight:600; color:#FAFAFA;'>{highest['pair']}</span>"
@@ -400,7 +583,7 @@ with tab_corr:
             icon = "&#128308;"
 
         st.markdown(
-            f"<div style='padding:14px; border-radius:8px; background:rgba(255,255,255,0.03); "
+            f"<div class='wl-card' style='padding:14px; border-radius:8px; background:rgba(255,255,255,0.03); "
             f"margin-top:8px; text-align:center;'>"
             f"<span style='font-size:1.1em;'>{icon} Avg. Correlation: <b>{avg_corr:.2f}</b> — {msg}</span>"
             f"</div>",
@@ -465,7 +648,7 @@ with tab_divs:
     col1, col2, col3, col4 = st.columns(4)
     with col1:
         st.markdown(
-            f"<div style='padding:14px; border-radius:8px; border-left:4px solid #4CAF50; "
+            f"<div class='wl-card' style='padding:14px; border-radius:8px; border-left:4px solid #4CAF50; "
             f"background:rgba(255,255,255,0.03);'>"
             f"<span style='color:#999; font-size:0.85em;'>Projected Annual Income</span><br>"
             f"<span style='font-size:1.8em; font-weight:600; color:#4CAF50;'>${total_annual:,.2f}</span>"
@@ -475,7 +658,7 @@ with tab_divs:
     with col2:
         monthly = total_annual / 12
         st.markdown(
-            f"<div style='padding:14px; border-radius:8px; border-left:4px solid #42A5F5; "
+            f"<div class='wl-card' style='padding:14px; border-radius:8px; border-left:4px solid #42A5F5; "
             f"background:rgba(255,255,255,0.03);'>"
             f"<span style='color:#999; font-size:0.85em;'>Monthly (avg)</span><br>"
             f"<span style='font-size:1.8em; font-weight:600; color:#42A5F5;'>${monthly:,.2f}</span>"
@@ -484,7 +667,7 @@ with tab_divs:
         )
     with col3:
         st.markdown(
-            f"<div style='padding:14px; border-radius:8px; border-left:4px solid #FFA726; "
+            f"<div class='wl-card' style='padding:14px; border-radius:8px; border-left:4px solid #FFA726; "
             f"background:rgba(255,255,255,0.03);'>"
             f"<span style='color:#999; font-size:0.85em;'>Portfolio Yield</span><br>"
             f"<span style='font-size:1.8em; font-weight:600; color:#FFA726;'>{portfolio_yield:.2f}%</span>"
@@ -495,7 +678,7 @@ with tab_divs:
         num_payers = len(payers)
         num_total = len(div_df)
         st.markdown(
-            f"<div style='padding:14px; border-radius:8px; border-left:4px solid #AB47BC; "
+            f"<div class='wl-card' style='padding:14px; border-radius:8px; border-left:4px solid #AB47BC; "
             f"background:rgba(255,255,255,0.03);'>"
             f"<span style='color:#999; font-size:0.85em;'>Dividend Payers</span><br>"
             f"<span style='font-size:1.8em; font-weight:600; color:#AB47BC;'>{num_payers}/{num_total}</span>"
@@ -623,7 +806,7 @@ with tab_cap:
             color = cap_colors[bucket]
             with kpi_cols[col_idx]:
                 st.markdown(
-                    f"<div style='padding:14px; border-radius:8px; border-left:4px solid {color}; "
+                    f"<div class='wl-card' style='padding:14px; border-radius:8px; border-left:4px solid {color}; "
                     f"background:rgba(255,255,255,0.03);'>"
                     f"<span style='color:#999; font-size:0.85em;'>{bucket}</span><br>"
                     f"<span style='font-size:1.6em; font-weight:600; color:{color};'>{pct:.1f}%</span>"
@@ -642,3 +825,240 @@ with tab_cap:
         # Treemap needs parent rows for each bucket
         treemap_df = cap_df[["symbol", "cap_bucket", "value"]].copy()
         st.plotly_chart(market_cap_treemap(treemap_df), use_container_width=True)
+
+# ==================== TAB 9: INSIGHTS ====================
+with tab_insights:
+    import numpy as np
+
+    # S&P 500 sector weights (using yfinance sector name strings)
+    SP500_SECTORS = {
+        "Technology": 30.0,
+        "Healthcare": 13.0,
+        "Financial Services": 13.0,
+        "Consumer Cyclical": 10.0,
+        "Industrials": 9.0,
+        "Communication Services": 9.0,
+        "Consumer Defensive": 6.0,
+        "Energy": 4.0,
+        "Utilities": 3.0,
+        "Real Estate": 2.0,
+        "Basic Materials": 2.0,
+    }
+
+    def insight_card(icon: str, title: str, body: str, severity: str = "neutral") -> str:
+        border = {"green": "#4CAF50", "yellow": "#FFA726", "red": "#EF5350", "neutral": "#42A5F5"}[severity]
+        return (
+            f"<div class='wl-card' style='padding:14px 16px; border-radius:8px; border-left:4px solid {border}; "
+            f"background:rgba(255,255,255,0.03); margin-bottom:10px;'>"
+            f"<span style='font-size:1.1em;'>{icon}</span> "
+            f"<span style='font-weight:600; color:#FAFAFA;'>{title}</span><br>"
+            f"<span style='color:#aaa; font-size:0.88em; line-height:1.5;'>{body}</span>"
+            f"</div>"
+        )
+
+    non_cash_ins = df_filtered[~df_filtered["is_cash"]].copy()
+    unique_tickers_ins = non_cash_ins["symbol"].unique().tolist()
+
+    with st.spinner("Analyzing portfolio..."):
+        ticker_info_ins = get_info_for_tickers(unique_tickers_ins)
+        corr_ins = correlation_matrix(unique_tickers_ins)
+
+    ticker_values_ins = non_cash_ins.groupby("symbol")["current_value"].sum()
+
+    # --- Sector analysis ---
+    user_sector_vals = {}
+    for ticker, value in ticker_values_ins.items():
+        info = ticker_info_ins.get(ticker, {})
+        sector = info.get("sector")
+        if sector:
+            user_sector_vals[sector] = user_sector_vals.get(sector, 0.0) + value
+
+    total_sector_val = sum(user_sector_vals.values())
+    user_sector_pcts = {s: v / total_sector_val * 100 for s, v in user_sector_vals.items()} if total_sector_val > 0 else {}
+
+    # --- Concentration ---
+    conc_sorted = ticker_values_ins.sort_values(ascending=False)
+    conc_pcts = conc_sorted / total_value * 100
+    top1_sym = conc_sorted.index[0] if len(conc_sorted) >= 1 else ""
+    top1_pct = conc_pcts.iloc[0] if len(conc_pcts) >= 1 else 0
+    top3_pct = conc_pcts.iloc[:3].sum() if len(conc_pcts) >= 3 else conc_pcts.sum()
+    top5_pct = conc_pcts.iloc[:5].sum() if len(conc_pcts) >= 5 else conc_pcts.sum()
+
+    # --- Correlation clusters ---
+    high_corr_pairs = []
+    avg_corr = 0.5
+    if not corr_ins.empty:
+        tickers_c = corr_ins.columns.tolist()
+        pair_vals = []
+        for i in range(len(tickers_c)):
+            for j in range(i + 1, len(tickers_c)):
+                val = corr_ins.iloc[i, j]
+                pair_vals.append(val)
+                if val > 0.85:
+                    high_corr_pairs.append((tickers_c[i], tickers_c[j], val))
+        if pair_vals:
+            avg_corr = sum(pair_vals) / len(pair_vals)
+
+    # --- Missing sectors ---
+    missing_sectors = [s for s in SP500_SECTORS if user_sector_pcts.get(s, 0) == 0.0]
+
+    # --- Single-stock risk ---
+    single_stock_risk = []
+    for ticker, value in ticker_values_ins.items():
+        info = ticker_info_ins.get(ticker, {})
+        qt = info.get("quote_type", "")
+        weight_pct = value / total_value * 100
+        if qt == "EQUITY" and weight_pct > 10.0:
+            single_stock_risk.append((ticker, weight_pct))
+
+    # --- Overweight / underweight ---
+    overweight = [(s, user_sector_pcts[s], SP500_SECTORS[s])
+                  for s in SP500_SECTORS
+                  if user_sector_pcts.get(s, 0) > SP500_SECTORS[s] * 1.5]
+    underweight = [(s, user_sector_pcts.get(s, 0), SP500_SECTORS[s])
+                   for s in SP500_SECTORS
+                   if user_sector_pcts.get(s, 0) < SP500_SECTORS[s] * 0.5 and SP500_SECTORS[s] >= 4.0]
+
+    # --- Diversification score (0-100) ---
+    # Component 1: Sector spread (0-25)
+    sector_score = min(25, len(user_sector_pcts) / len(SP500_SECTORS) * 25)
+    # Component 2: Correlation (0-25) — lower avg = better
+    corr_score = max(0, 25 - avg_corr * 25)
+    # Component 3: Concentration (0-25)
+    if top3_pct < 20:
+        conc_score = 25
+    elif top3_pct < 35:
+        conc_score = 15
+    else:
+        conc_score = 5
+    # Component 4: Holdings count (0-25)
+    holdings_score = min(25, len(unique_tickers_ins) / 20 * 25)
+    div_score = round(sector_score + corr_score + conc_score + holdings_score)
+
+    # ========== RENDER ==========
+
+    # Gauge centered
+    _, col_gauge, _ = st.columns([1, 2, 1])
+    with col_gauge:
+        st.plotly_chart(diversification_gauge(div_score), use_container_width=True)
+
+    # Score breakdown
+    sc_cols = st.columns(4)
+    score_items = [
+        ("Sector Spread", f"{sector_score:.0f}/25", "#4CAF50" if sector_score >= 15 else "#FFA726"),
+        ("Correlation", f"{corr_score:.0f}/25", "#4CAF50" if corr_score >= 15 else "#FFA726"),
+        ("Concentration", f"{conc_score:.0f}/25", "#4CAF50" if conc_score >= 20 else "#FFA726" if conc_score >= 15 else "#EF5350"),
+        ("Holdings Count", f"{holdings_score:.0f}/25", "#4CAF50" if holdings_score >= 15 else "#FFA726"),
+    ]
+    for i, (label, val, color) in enumerate(score_items):
+        with sc_cols[i]:
+            st.markdown(
+                f"<div class='wl-card' style='padding:10px 14px; border-radius:8px; border-left:4px solid {color}; "
+                f"background:rgba(255,255,255,0.03); text-align:center;'>"
+                f"<span style='color:#999; font-size:0.8em;'>{label}</span><br>"
+                f"<span style='font-size:1.4em; font-weight:600; color:{color};'>{val}</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+    st.markdown("<div style='margin-top:20px;'></div>", unsafe_allow_html=True)
+
+    # --- Sector comparison chart ---
+    st.subheader("Sector Analysis")
+    if user_sector_pcts:
+        st.plotly_chart(sector_comparison_chart(user_sector_pcts, SP500_SECTORS), use_container_width=True)
+
+        if overweight or underweight:
+            ow_cols = st.columns(2)
+            with ow_cols[0]:
+                for s, user_w, sp_w in overweight:
+                    st.markdown(insight_card(
+                        "&#9888;&#65039;", f"Overweight: {s}",
+                        f"Your portfolio has {user_w:.1f}% vs S&P's {sp_w:.1f}%. "
+                        f"Consider trimming to reduce sector concentration.",
+                        "yellow",
+                    ), unsafe_allow_html=True)
+            with ow_cols[1]:
+                for s, user_w, sp_w in underweight:
+                    st.markdown(insight_card(
+                        "&#128269;", f"Underweight: {s}",
+                        f"Your portfolio has {user_w:.1f}% vs S&P's {sp_w:.1f}%. "
+                        f"Adding exposure here could improve diversification.",
+                        "neutral",
+                    ), unsafe_allow_html=True)
+    else:
+        st.info("No sector data available for your holdings.")
+
+    # --- Missing sectors ---
+    if missing_sectors:
+        st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
+        st.markdown(insight_card(
+            "&#128308;", "Missing Sector Exposure",
+            f"You have 0% allocation to: <b>{', '.join(missing_sectors)}</b>. "
+            f"Broad index funds or sector ETFs can fill these gaps.",
+            "red",
+        ), unsafe_allow_html=True)
+
+    st.divider()
+
+    # --- Correlation clusters ---
+    st.subheader("Correlation Clusters")
+    if high_corr_pairs:
+        st.caption("Pairs with correlation > 0.85 — these holdings move almost identically and provide limited diversification.")
+        corr_cols = st.columns(min(3, len(high_corr_pairs)))
+        for i, (t1, t2, val) in enumerate(high_corr_pairs[:6]):
+            with corr_cols[i % min(3, len(high_corr_pairs))]:
+                st.markdown(insight_card(
+                    "&#128279;", f"{t1} & {t2}",
+                    f"Correlation: <b>{val:.2f}</b> — these positions are near-duplicates "
+                    f"in terms of price movement. Consider consolidating.",
+                    "red",
+                ), unsafe_allow_html=True)
+    else:
+        st.markdown(insight_card(
+            "&#9989;", "No Redundant Pairs",
+            f"No holdings have correlation above 0.85. Average pairwise correlation: {avg_corr:.2f}.",
+            "green",
+        ), unsafe_allow_html=True)
+
+    st.divider()
+
+    # --- Concentration risk ---
+    st.subheader("Concentration Risk")
+    conc_cols = st.columns(3)
+    conc_items = [
+        ("Largest Position", f"{top1_sym} ({top1_pct:.1f}%)", top1_pct, 15, 10),
+        ("Top 3 Holdings", f"{top3_pct:.1f}%", top3_pct, 35, 20),
+        ("Top 5 Holdings", f"{top5_pct:.1f}%", top5_pct, 50, 35),
+    ]
+    for i, (label, display_val, pct, yellow_thresh, green_thresh) in enumerate(conc_items):
+        color = "#4CAF50" if pct < green_thresh else "#FFA726" if pct < yellow_thresh else "#EF5350"
+        with conc_cols[i]:
+            st.markdown(
+                f"<div class='wl-card' style='padding:14px; border-radius:8px; border-left:4px solid {color}; "
+                f"background:rgba(255,255,255,0.03); text-align:center;'>"
+                f"<span style='color:#999; font-size:0.85em;'>{label}</span><br>"
+                f"<span style='font-size:1.5em; font-weight:600; color:{color};'>{display_val}</span>"
+                f"</div>",
+                unsafe_allow_html=True,
+            )
+
+    # --- Single-stock risk ---
+    if single_stock_risk:
+        st.markdown("<div style='margin-top:12px;'></div>", unsafe_allow_html=True)
+        for ticker, weight in single_stock_risk:
+            st.markdown(insight_card(
+                "&#9888;&#65039;", f"Single-Stock Risk: {ticker}",
+                f"{ticker} is {weight:.1f}% of your portfolio. Individual stocks above 10% "
+                f"carry outsized company-specific risk. Consider trimming or hedging.",
+                "yellow",
+            ), unsafe_allow_html=True)
+
+# --- Footer ---
+st.markdown(
+    "<div style='text-align:center; padding:24px 0 12px; color:#444; font-size:0.8rem;'>"
+    "Wealth<span style=\"color:#4CAF50;\">Lens</span> &mdash; "
+    "Data sourced from Fidelity exports &amp; Yahoo Finance. Not financial advice."
+    "</div>",
+    unsafe_allow_html=True,
+)
